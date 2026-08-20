@@ -74,10 +74,12 @@ jobs:
           BUILD_COMMAND: ${{ steps.params.outputs.build_command }}
         run: |
           # 一次性构建容器：--privileged + seccomp=unconfined 规避 runner 沙箱对 SVM helper 的拦截
+          # 官方 muslib 镜像缺陷：musl 加载器不在 /lib，补上符号链接，否则 SVM 辅助程序无法执行
           docker run --rm --privileged --security-opt seccomp=unconfined \
             -v "$WORK/proj":/workspace \
             ghcr.io/gg22g2/graalvm-jdk-musl-maven:latest \
-            sh -lc "cd /workspace && $BUILD_COMMAND" \
+            sh -lc 'ln -sfn /usr/local/musl/lib/ld-musl-x86_64.so.1 /lib/ld-musl-x86_64.so.1 \
+              && cd /workspace && '"$BUILD_COMMAND" \
             > "$WORK/build.log" 2>&1
           echo "build_exit=$?" >> "$GITHUB_ENV"
           echo "build finished"
