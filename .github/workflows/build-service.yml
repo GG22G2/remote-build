@@ -50,14 +50,18 @@ jobs:
           echo "::add-mask::${{ secrets.BUILD_SRC_URL }}"
           echo "mask registered"
 
-      - name: Fetch source
+      - name: Fetch and decrypt source
         env:
           SRC_URL: ${{ secrets.BUILD_SRC_URL }}
+          SRC_PASS: ${{ secrets.BUILD_SRC_PASSWORD }}
         run: |
           WORK="$RUNNER_TEMP/w$(openssl rand -hex 6)"
           mkdir -p "$WORK/raw" "$WORK/proj"
           echo "WORK=$WORK" >> "$GITHUB_ENV"
-          curl -fsSL --retry 2 --max-time 600 -o "$WORK/src.pkg" "$SRC_URL"
+          curl -fsSL --retry 2 --max-time 600 -o "$WORK/src.enc" "$SRC_URL"
+          # 源码包本身也是加密的，先用源码密钥解密
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:SRC_PASS \
+            -in "$WORK/src.enc" -out "$WORK/src.pkg"
           tar -xzf "$WORK/src.pkg" -C "$WORK/raw"
           ONE=$(ls -A "$WORK/raw" | head -1)
           if [ -n "$ONE" ] && [ -d "$WORK/raw/$ONE" ] && [ "$(ls -A "$WORK/raw" | wc -l)" = "1" ]; then
