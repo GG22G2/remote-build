@@ -68,6 +68,8 @@ jobs:
           echo "source fetched"
 
       - name: Build (output silenced)
+        # 失败也继续：日志必须加密进产物让用户能看到失败原因，最后由 Fail 步骤统一判败
+        continue-on-error: true
         env:
           BUILD_COMMAND: ${{ steps.params.outputs.build_command }}
         run: |
