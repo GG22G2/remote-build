@@ -1,0 +1,113 @@
+name: build-service
+
+# 触发方式一（推荐）：持 PAT 者 repository_dispatch，陌生人无法触发
+# 触发方式二：网页 workflow_dispatch，需输入与 Secret BUILD_TOKEN 一致的触发口令
+# 敏感参数（源码链接、产物密码）一律走 Secrets，不进 inputs/日志。
+# 设计目标：公开日志近乎白纸；产物 AES-256 加密 + HMAC 校验。
+
+on:
+  repository_dispatch:
+    types: [build-request]
+  workflow_dispatch:
+    inputs:
+      auth_token:
+        description: 触发口令（与 Secret BUILD_TOKEN 一致）
+        required: true
+      build_command:
+        description: 构建命令
+        required: false
+        default: 'mvn -B clean package'
+      artifact_path:
+        description: 产物相对源码根目录的路径
+        required: false
+        default: 'target'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Auth (workflow_dispatch only)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          AUTH_INPUT: ${{ inputs.auth_token }}
+        run: |
+          [ "$AUTH_INPUT" = "${{ secrets.BUILD_TOKEN }}" ] || { echo "unauthorized"; exit 1; }
+
+      - name: Resolve params
+        id: params
+        env:
+          BC_D: ${{ inputs.build_command }}
+          BC_R: ${{ github.event.client_payload.build_command }}
+          AP_D: ${{ inputs.artifact_path }}
+          AP_R: ${{ github.event.client_payload.artifact_path }}
+        run: |
+          echo "build_command=${BC_D:-${BC_R:-mvn -B clean package}}" >> "$GITHUB_OUTPUT"
+          echo "artifact_path=${AP_D:-${AP_R:-target}}" >> "$GITHUB_OUTPUT"
+          echo "params resolved"
+
+      - name: Mask source URL
+        run: |
+          echo "::add-mask::${{ secrets.BUILD_SRC_URL }}"
+          echo "mask registered"
+
+      - name: Fetch source
+        env:
+          SRC_URL: ${{ secrets.BUILD_SRC_URL }}
+        run: |
+          WORK="$RUNNER_TEMP/w$(openssl rand -hex 6)"
+          mkdir -p "$WORK/raw" "$WORK/proj"
+          echo "WORK=$WORK" >> "$GITHUB_ENV"
+          curl -fsSL --retry 2 --max-time 600 -o "$WORK/src.pkg" "$SRC_URL"
+          tar -xzf "$WORK/src.pkg" -C "$WORK/raw"
+          ONE=$(ls -A "$WORK/raw" | head -1)
+          if [ -n "$ONE" ] && [ -d "$WORK/raw/$ONE" ] && [ "$(ls -A "$WORK/raw" | wc -l)" = "1" ]; then
+            cp -a "$WORK/raw/$ONE/." "$WORK/proj/"
+          else
+            cp -a "$WORK/raw/." "$WORK/proj/"
+          fi
+          echo "source fetched"
+
+      - name: Build (output silenced)
+        env:
+          BUILD_COMMAND: ${{ steps.params.outputs.build_command }}
+        run: |
+          # 一次性构建容器：--privileged + seccomp=unconfined 规避 runner 沙箱对 SVM helper 的拦截
+          docker run --rm --privileged --security-opt seccomp=unconfined \
+            -v "$WORK/proj":/workspace \
+            ghcr.io/gg22g2/graalvm-jdk-musl-maven:latest \
+            sh -lc "cd /workspace && $BUILD_COMMAND" \
+            > "$WORK/build.log" 2>&1
+          echo "build_exit=$?" >> "$GITHUB_ENV"
+          echo "build finished"
+
+      - name: Package output bundle
+        env:
+          ARTIFACT_PATH: ${{ steps.params.outputs.artifact_path }}
+          ZIP_PASS: ${{ secrets.BUILD_ZIP_PASSWORD }}
+        run: |
+          cd "$WORK"
+          mkdir -p out
+          if [ -e "proj/$ARTIFACT_PATH" ]; then
+            cp -a "proj/$ARTIFACT_PATH" out/artifact
+          else
+            echo "artifact path not found: $ARTIFACT_PATH" > out/NOTE.txt
+          fi
+          cp build.log out/build.log
+          tar -czf bundle.tgz -C out .
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 -pass env:ZIP_PASS \
+            -in bundle.tgz -out "$GITHUB_WORKSPACE/bundle.enc"
+          openssl dgst -sha256 -hmac "$ZIP_PASS" "$GITHUB_WORKSPACE/bundle.enc" \
+            | awk '{print $NF}' > "$GITHUB_WORKSPACE/bundle.enc.sha256"
+          echo "bundle ready"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: |
+            bundle.enc
+            bundle.enc.sha256
+          retention-days: 7
+
+      - name: Fail if build failed
+        if: env.build_exit != '0'
+        run: exit 1
