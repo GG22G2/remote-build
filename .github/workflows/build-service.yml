@@ -1,9 +1,6 @@
 name: build-service
 
-# 触发方式一（推荐）：持 PAT 者 repository_dispatch，陌生人无法触发
-# 触发方式二：网页 workflow_dispatch，需输入与 Secret BUILD_TOKEN 一致的触发口令
-# 敏感参数（源码链接、产物密码）一律走 Secrets，不进 inputs/日志。
-# 设计目标：公开日志近乎白纸；产物 AES-256 加密 + HMAC 校验。
+# Triggers: repository_dispatch (build-request) or workflow_dispatch with auth token.
 
 on:
   repository_dispatch:
@@ -59,7 +56,6 @@ jobs:
           mkdir -p "$WORK/raw" "$WORK/proj"
           echo "WORK=$WORK" >> "$GITHUB_ENV"
           curl -fsSL --retry 2 --max-time 600 -o "$WORK/src.enc" "$SRC_URL"
-          # 源码包本身也是加密的，先用源码密钥解密
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:SRC_PASS \
             -in "$WORK/src.enc" -out "$WORK/src.pkg"
           tar -xzf "$WORK/src.pkg" -C "$WORK/raw"
@@ -72,13 +68,10 @@ jobs:
           echo "source fetched"
 
       - name: Build (output silenced)
-        # 失败也继续：日志必须加密进产物让用户能看到失败原因，最后由 Fail 步骤统一判败
         continue-on-error: true
         env:
           BUILD_COMMAND: ${{ steps.params.outputs.build_command }}
         run: |
-          # 一次性构建容器：--privileged + seccomp=unconfined 规避 runner 沙箱对 SVM helper 的拦截
-          # 官方 muslib 镜像缺陷：musl 加载器不在 /lib，补上符号链接，否则 SVM 辅助程序无法执行
           docker run --rm --privileged --security-opt seccomp=unconfined \
             -v "$WORK/proj":/workspace \
             ghcr.io/gg22g2/graalvm-jdk-musl-maven:latest \
