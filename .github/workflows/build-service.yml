@@ -38,8 +38,17 @@ jobs:
           AP_D: ${{ inputs.artifact_path }}
           AP_R: ${{ github.event.client_payload.artifact_path }}
         run: |
-          echo "build_command=${BC_D:-${BC_R:-mvn -B clean package}}" >> "$GITHUB_OUTPUT"
-          echo "artifact_path=${AP_D:-${AP_R:-target}}" >> "$GITHUB_OUTPUT"
+          # GITHUB_OUTPUT 文件命令不支持含换行的值：多行构建命令必须用 heredoc 定界符语法
+          _bc="${BC_D:-${BC_R:-mvn -B clean package}}"
+          _ap="${AP_D:-${AP_R:-target}}"
+          {
+            echo "build_command<<DSH_BC"
+            printf '%s\n' "$_bc"
+            echo "DSH_BC"
+            echo "artifact_path<<DSH_AP"
+            printf '%s\n' "$_ap"
+            echo "DSH_AP"
+          } >> "$GITHUB_OUTPUT"
           echo "params resolved"
 
       - name: Mask source URL
