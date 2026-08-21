@@ -1,0 +1,10 @@
+target/
+*.class
+.idea/
+*.iml
+.vscode/
+
+# 本地专用，不入库
+/build-output/
+/run-remote-build.ps1
+/build-service.yml

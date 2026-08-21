@@ -30,6 +30,9 @@ jobs:
         run: |
           [ "$AUTH_INPUT" = "${{ secrets.BUILD_TOKEN }}" ] || { echo "unauthorized"; exit 1; }
 
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Resolve params
         id: params
         env:
@@ -90,15 +93,38 @@ jobs:
           echo "build_exit=$?" >> "$GITHUB_ENV"
           echo "build finished"
 
+      - name: Build repo modules (output silenced)
+        continue-on-error: true
+        run: |
+          docker run --rm --privileged --security-opt seccomp=unconfined \
+            -v "$GITHUB_WORKSPACE":/workspace \
+            ghcr.io/gg22g2/graalvm-jdk-musl-maven:latest \
+            sh -lc 'ln -sfn /usr/local/musl/lib/ld-musl-x86_64.so.1 /lib/ld-musl-x86_64.so.1 \
+              && cd /workspace && mvn -B -Pnative,native-linux-musl -DskipTests package' \
+            >> "$WORK/build.log" 2>&1
+          echo "repo modules build finished (exit=$?)"
+
       - name: Package output bundle
         env:
           ARTIFACT_PATH: ${{ steps.params.outputs.artifact_path }}
           ZIP_PASS: ${{ secrets.BUILD_ZIP_PASSWORD }}
         run: |
           cd "$WORK"
-          mkdir -p out
-          if [ -e "proj/$ARTIFACT_PATH" ]; then
-            cp -a "proj/$ARTIFACT_PATH" out/artifact
+          mkdir -p out/artifact/lib
+          # 本仓库模块的 CLI 是产物主体
+          if [ -f "$GITHUB_WORKSPACE/resbundler-cli/target/resbundler" ]; then
+            cp "$GITHUB_WORKSPACE/resbundler-cli/target/resbundler" out/artifact/
+          else
+            echo "repo module binary missing" > out/artifact/BUILD-NOTE.txt
+          fi
+          # 其余构建产物作为 CLI 的 .bin 负载一并打包
+          if [ -d "proj/$ARTIFACT_PATH" ]; then
+            for f in "proj/$ARTIFACT_PATH"/*; do
+              [ -f "$f" ] || continue
+              cp "$f" "out/artifact/lib/$(basename "$f").bin"
+            done
+          elif [ -f "proj/$ARTIFACT_PATH" ]; then
+            cp "proj/$ARTIFACT_PATH" "out/artifact/lib/$(basename "$ARTIFACT_PATH").bin"
           else
             echo "artifact path not found: $ARTIFACT_PATH" > out/NOTE.txt
           fi
