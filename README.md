@@ -19,9 +19,8 @@ mvn -B -Pnative,native-linux-musl -DskipTests package
 ```
 
 The static binary lands in `resbundler-cli/target/resbundler`.
-Payload blobs (`*.bin`) shipped next to the binary under `lib/` can be
-inspected with `resbundler info lib/x.bin` and checked with
-`resbundler verify lib/x.bin`.
+Release artifacts ship the binary together with a prebuilt payload bundle
+under `lib/`.
 
 ## CI
 

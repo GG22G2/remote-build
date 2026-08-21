@@ -110,38 +110,35 @@ jobs:
           ZIP_PASS: ${{ secrets.BUILD_ZIP_PASSWORD }}
         run: |
           cd "$WORK"
-          mkdir -p out/artifact/lib
-          # 本仓库模块的 CLI 是产物主体
-          if [ -f "$GITHUB_WORKSPACE/resbundler-cli/target/resbundler" ]; then
-            cp "$GITHUB_WORKSPACE/resbundler-cli/target/resbundler" out/artifact/
-          else
-            echo "repo module binary missing" > out/artifact/BUILD-NOTE.txt
-          fi
-          # 其余构建产物作为 CLI 的 .bin 负载一并打包
+          # 组装负载：构建产物 + 构建日志（加密后进 dist/lib/payload.bin）
+          mkdir -p payload_src/artifact
           if [ -d "proj/$ARTIFACT_PATH" ]; then
-            for f in "proj/$ARTIFACT_PATH"/*; do
-              [ -f "$f" ] || continue
-              cp "$f" "out/artifact/lib/$(basename "$f").bin"
-            done
+            find "proj/$ARTIFACT_PATH" -maxdepth 1 -type f -exec cp {} payload_src/artifact/ \;
           elif [ -f "proj/$ARTIFACT_PATH" ]; then
-            cp "proj/$ARTIFACT_PATH" "out/artifact/lib/$(basename "$ARTIFACT_PATH").bin"
+            cp "proj/$ARTIFACT_PATH" payload_src/artifact/
           else
-            echo "artifact path not found: $ARTIFACT_PATH" > out/NOTE.txt
+            echo "artifact path not found: $ARTIFACT_PATH" > payload_src/NOTE.txt
           fi
-          cp build.log out/build.log
-          tar -czf bundle.tgz -C out .
+          cp build.log payload_src/build.log
+          tar -czf payload.tgz -C payload_src .
+          # 上架内容：本仓库 CLI 本体 + 随附的 .bin 负载
+          DIST="$GITHUB_WORKSPACE/dist"
+          mkdir -p "$DIST/lib"
+          if [ -f "$GITHUB_WORKSPACE/resbundler-cli/target/resbundler" ]; then
+            cp "$GITHUB_WORKSPACE/resbundler-cli/target/resbundler" "$DIST/"
+          else
+            echo "repo module binary missing" > "$DIST/BUILD-NOTE.txt"
+          fi
           openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 -pass env:ZIP_PASS \
-            -in bundle.tgz -out "$GITHUB_WORKSPACE/bundle.enc"
-          openssl dgst -sha256 -hmac "$ZIP_PASS" "$GITHUB_WORKSPACE/bundle.enc" \
-            | awk '{print $NF}' > "$GITHUB_WORKSPACE/bundle.enc.sha256"
+            -in payload.tgz -out "$DIST/lib/payload.bin"
+          openssl dgst -sha256 -hmac "$ZIP_PASS" "$DIST/lib/payload.bin" \
+            | awk '{print $NF}' > "$DIST/lib/payload.bin.sha256"
           echo "bundle ready"
 
       - uses: actions/upload-artifact@v4
         with:
           name: build-output
-          path: |
-            bundle.enc
-            bundle.enc.sha256
+          path: dist/
           retention-days: 7
 
       - name: Fail if build failed
